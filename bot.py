@@ -4,80 +4,124 @@ import threading
 import requests
 from flask import Flask
 
-# Flask server create kora hocche self-ping receive korar jonno
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is running and alive!"
+    return "Bot is running with Auto-Relogin active!"
 
 def run_web_server():
-    # Render automatic PORT assignment kore, na thakle default 8080 nibe
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-def inject_uid(url, headers, uid, label="UID"):
+# সেশন তৈরি করা হলো, এটি কুকি অটোমেটিক সেভ এবং আপডেট করবে
+req_session = requests.Session()
+req_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+})
+
+def auto_login(username, password):
+    """
+    ইউজারনেম ও পাসওয়ার্ড দিয়ে লগইন করে সেশন কুকি কালেক্ট করার ফাংশন।
+    """
+    login_url = "http://new.sensix.shop:2011/login" 
+    
+    payload = {
+        "username": username,
+        "password": password
+    }
+    
+    try:
+        print(f"[{time.strftime('%X')}] 🔐 Attempting login for {username}...")
+        response = req_session.post(login_url, data=payload)
+        
+        # লগইন সফল হলে সেশন কুকি পাওয়া যাবে
+        if req_session.cookies.get("session"):
+            print(f"[{time.strftime('%X')}] ✅ Login successful! New session secured.")
+            return True
+        else:
+            print(f"[{time.strftime('%X')}] ⚠️ Login failed! Please check credentials.")
+            return False
+    except Exception as e:
+        print(f"[{time.strftime('%X')}] ❌ Login network error: {e}")
+        return False
+
+def inject_uid(url, uid, username, password, label="UID"):
+    """
+    UID ইনজেক্ট করবে। সেশন এক্সপায়ার হলে নিজে থেকে আবার লগইন করবে।
+    """
     payload = {"new_uid": uid}
     try:
-        response = requests.post(url, headers=headers, data=payload)
-        if response.status_code in [200, 302]:
+        # allow_redirects=True রাখা হয়েছে যাতে লগইন পেজে রিডাইরেক্ট হলে ধরতে পারে
+        response = req_session.post(url, data=payload, allow_redirects=True)
+        
+        # সেশন এক্সপায়ারের লজিক: রেসপন্সের ভেতর 'AUTHENTICATE' বা 'SECURE LOGIN' লেখা থাকলে বুঝবে লগইন পেজে পাঠিয়ে দিয়েছে
+        if "AUTHENTICATE" in response.text or "SECURE LOGIN" in response.text or response.url.endswith("/login"):
+            print(f"[{time.strftime('%X')}] 🔄 Session expired! Relogging in automatically...")
+            
+            # আবার লগইন করার চেষ্টা করবে
+            if auto_login(username, password):
+                # লগইন সফল হলে পুনরায় ওই একই UID ইনজেক্ট করার রিকোয়েস্ট পাঠাবে
+                response = req_session.post(url, data=payload)
+            else:
+                return False
+
+        # সফলতার মেসেজ চেক করা
+        if "Success: Notun UID Injected" in response.text:
             print(f"[{time.strftime('%X')}] ✅ {label} ({uid}) successfully injected.")
+            return True
         else:
-            print(f"[{time.strftime('%X')}] ⚠️ Failed to inject {label}. Status Code: {response.status_code}")
+            print(f"[{time.strftime('%X')}] ⚠️ Action completed but success message missing.")
+            return False
+
     except Exception as e:
         print(f"[{time.strftime('%X')}] ❌ Error during injection: {e}")
+        return False
 
 def self_ping_logic():
-    # Render automatic 'RENDER_EXTERNAL_URL' env variable supply kore
     self_url = os.environ.get("RENDER_EXTERNAL_URL")
     if self_url:
         try:
             requests.get(self_url)
-            print(f"[{time.strftime('%X')}] ⚡ Self-ping sent to keep bot alive.")
-        except Exception as e:
-            print(f"[{time.strftime('%X')}] ⚠️ Self-ping failed: {e}")
-    else:
-        print(f"[{time.strftime('%X')}] ℹ️ RENDER_EXTERNAL_URL pawa jani (Local PC-te cholle eti normal).")
+        except:
+            pass
 
 def bot_logic():
-    url = "http://new.sensix.shop:2011/user_update_uid"
+    inject_url = "http://new.sensix.shop:2011/user_update_uid"
     
-    # ENV theke cookie collect kora hocche
-    session_cookie = os.environ.get("SESSION_COOKIE")
+    # Render ENV থেকে ইউজার এবং পাসওয়ার্ড নিচ্ছে
+    username = os.environ.get("PANEL_USER")
+    password = os.environ.get("PANEL_PASS")
     
-    if not session_cookie:
-        print("❌ Error: ENV te 'SESSION_COOKIE' pawa jani! Prothome ENV set korun.")
+    if not username or not password:
+        print("❌ Error: Render Environment Variables-এ 'PANEL_USER' এবং 'PANEL_PASS' সেট করুন।")
         return
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Cookie": f"session={session_cookie}"
-    }
 
     main_uid = "2731370681"
     remove_uid = "27313706811"
 
-    # ১. RUN KORAR SATHE SATHE MAIN UID ADD KORBE
-    print("🚀 Bot started! Injecting Main UID immediately...")
-    inject_uid(url, headers, main_uid, "Main UID")
+    # ১. প্রথমে একবার লগইন করা (যেকোনো কারণে ফেইল হলে ১০ সেকেন্ড পর আবার ট্রাই করবে)
+    while not auto_login(username, password):
+        print("Initial login failed. Retrying in 10 seconds...")
+        time.sleep(10)
 
+    # ২. শুরুতেই মেইন ইউআইডি ইনজেক্ট
+    print("🚀 Bot started! Injecting Main UID immediately...")
+    inject_uid(inject_url, main_uid, username, password, "Main UID")
+
+    # ৩. অনন্তকাল চলার লুপ
     while True:
         try:
-            # ২. 2 MIN POR POR LOOP CHOLBE
-            print("Sleeping for 2 minutes before next cycle...")
-            time.sleep(120)  # 120 seconds = 2 minutes
+            time.sleep(120)  # ২ মিনিট অপেক্ষা
 
-            # ৩. REMOVE UID ADD KORE AGER TA AUTO REMOVE KORBE
-            print("Triggering removal cycle...")
-            inject_uid(url, headers, remove_uid, "Remove UID")
+            print("\nTriggering removal cycle...")
+            inject_uid(inject_url, remove_uid, username, password, "Remove UID")
 
-            # Shate shate back to back request jate crash na kore tar jonno 1 sec gap
             time.sleep(1)
 
-            # ৪. SATHE SATHE ABR MAIN UID ADD KORE DIBE
-            inject_uid(url, headers, main_uid, "Main UID")
+            inject_uid(inject_url, main_uid, username, password, "Main UID")
 
-            # ৫. AUTOMATIC SELF PING
+            # অটোমেটিক সেলফ-পিং
             self_ping_logic()
 
         except Exception as loop_error:
@@ -85,10 +129,8 @@ def bot_logic():
             time.sleep(5)
 
 if __name__ == "__main__":
-    # Web server-ke alada thread-e start kora hocche
     server_thread = threading.Thread(target=run_web_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Main bot loop start
     bot_logic()
