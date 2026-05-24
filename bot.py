@@ -24,7 +24,7 @@ def auto_login(username, password):
     """
     ইউজারনেম ও পাসওয়ার্ড দিয়ে লগইন করে সেশন কুকি কালেক্ট করার ফাংশন।
     """
-    login_url = "http://new.sensix.shop:2011/login" 
+    login_url = "http://new.sensix.shop:2011/" 
     
     payload = {
         "username": username,
